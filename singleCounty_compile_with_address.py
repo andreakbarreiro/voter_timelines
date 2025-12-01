@@ -148,6 +148,10 @@ def _alias_core_columns(df):
     pct_ser = _extract_series(df, PRECINCT_COLS + ['Precinct'])
     df['Precinct'] = pct_ser.astype('string') if pct_ser is not None else pd.Series(pd.NA, index=df.index, dtype='string')
 
+    zip_ser = _extract_series(df, ADDRESS_GROUPS['zip'])
+    # Same processing as in "address" part
+    df['Zip'] = zip_ser.map(lambda v: _zip5(str(v)))
+
     cnty_ser = _extract_series(df, ['County Code','COUNTY CODE','CountyCode','COUNTYCODE','CNTY','County'])
     if cnty_ser is None:
         df['County Code'] = pd.Series(pd.NA, index=df.index)
@@ -288,7 +292,7 @@ def process_csv_directory(directory, combined_data, which_cnty, meta_index):
     print(f'\n\n{datestr}\n\n')
 
     # Prepare per-date columns if absent
-    for suffix in ('_Status', '_Precinct', '_AddrKey'):
+    for suffix in ('_Status', '_Precinct', '_Zip', '_AddrKey'):
         col = datestr + suffix
         if col not in combined_data.columns:
             combined_data[col] = pd.NA
@@ -327,16 +331,20 @@ def process_csv_directory(directory, combined_data, which_cnty, meta_index):
             combined_data = pd.concat([combined_data, add_df], ignore_index=True)
 
         # Merge onto cohort by VUID to align values for assignment
-        cols_for_merge = ['VUID', 'Precinct', 'Status Code', '__ADDR_KEY__']
+        cols_for_merge = ['VUID', 'Precinct', 'Zip', 'Status Code', '__ADDR_KEY__']
         df_merged = pd.merge(combined_data[['VUID']], df[cols_for_merge], on='VUID', how='left')
 
         # Assign per-date columns (clean precinct)
         status_col = df_merged['Status Code'] if 'Status Code' in df_merged.columns else pd.NA
         pct_col = df_merged['Precinct'] if 'Precinct' in df_merged.columns else pd.NA
+        zip_col = df_merged['Zip'] if 'Zip' in df_merged.columns else pd.NA
+
+        # AKB: Is this removing trailing zeros? i.e. if "Precinct" was read as a number, and there was a .0 attached.
         pct_col = pd.Series(pct_col, copy=False).astype('string').str.replace(r'\.0$', '', regex=True)
 
         combined_data[datestr + '_Status']   = status_col
         combined_data[datestr + '_Precinct'] = pct_col
+        combined_data[datestr + '_Zip'] = zip_col
         combined_data[datestr + '_AddrKey']  = df_merged['__ADDR_KEY__'] if '__ADDR_KEY__' in df_merged.columns else pd.NA
 
         print(combined_data.shape)
@@ -491,6 +499,11 @@ def main():
     combined_data.to_csv(out_fname, index=False)
     print(f"Wrote fresh run output: {out_fname}")
 
+    # --- Write a sample file ---
+    out_sample =  f'output_county{which_cnty:03d}_{run_ts}_SAMPLE.csv'
+    combined_data.head(1000).to_csv(out_sample, index=False)
+    print(f"Wrote sample: {out_sample}")
+    
     if False:
         # (Optional) also write a dated county summary if you like
         county_summary = f'combined_data_CNTY{which_cnty:03d}_{run_ts}.csv'
