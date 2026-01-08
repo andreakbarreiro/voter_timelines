@@ -193,12 +193,26 @@ def compute_trajectories(df: pd.DataFrame, start: str, end: str, include_overlap
         df_sub["cat_anyStat_addr1"] = mask_S_start & sv_trans_date.notna() & (df_sub["sv_addr_changed"] == 1)
         df_sub["cat_anyStat_addr0"] = mask_S_start & sv_trans_date.notna() & (df_sub["sv_addr_changed"] == 0)
     
-    verbose_test = True
+    verbose_test     = True
+    limit_precinct_flag = False
     if verbose_test:
-        ptest = '1001'
-        df_sub_lim = df_sub[df_sub['start_precinct']==ptest]
-        #print(df_sub.columns.to_list())
-        df_sub_lim.to_csv(f'test_traj_P{ptest}.csv',index=False)
+        ### For now, hard-code this
+        # Structure question here: is it better to run "singleCounty_compile_with_address" on a single precinct?
+        #    Then run this.
+        #  (I see that is not already an option; I misremembered)
+        #
+        # Recommended here:
+        #   Dallas = 3000 (about 900 S at start)
+        #   Tarrant = 2331 (>= 30 addr0, 28% of S-to-V are addr0
+        #   Erath = entire county
+    
+        precinct_to_test = 
+        if limit_precinct_flag:
+            df_sub_lim = df_sub[df_sub['start_precinct']==precinct_to_test]
+            #print(df_sub.columns.to_list())
+            df_sub_lim.to_csv(f'test_traj_P{ptest}.csv',index=False)
+        else:
+            df_sub_lim.to_csv(f'test_traj_AllPrec.csv',index=False)    
     
     return df_sub, (df_sub["start_zip"] if "start_zip" in df_sub.columns else None)
 
