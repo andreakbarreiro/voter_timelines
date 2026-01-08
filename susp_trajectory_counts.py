@@ -38,6 +38,10 @@ def parse_args():
 
     # Label for missing/blank group values
     p.add_argument("--unknown-label", default="UNKNOWN", help="Label to use when the start group value is missing/blank.")
+
+    # Also include overlapping columns: S->V w/out respect to end result
+    p.add_argument("--include_overlaps", action="store_true")
+    
     return p.parse_args()
 
 # ---------- column helpers ----------
@@ -87,7 +91,7 @@ def _slice_dates_between(all_dates: List[str], start: str, end: str) -> List[str
     return all_dates[i0:i1+1]
 
 # ---------- core logic ----------
-def compute_trajectories(df: pd.DataFrame, start: str, end: str, unknown_label: str) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
+def compute_trajectories(df: pd.DataFrame, start: str, end: str, include_overlaps: bool, unknown_label: str) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
     all_dates = _get_all_dates(df)
     if start not in all_dates:
         error(f"Start date {start} not found in columns.")
@@ -184,6 +188,11 @@ def compute_trajectories(df: pd.DataFrame, start: str, end: str, unknown_label: 
     df_sub["cat_still_S"] = df_sub["still_s"]
     df_sub["cat_vanished"] = df_sub["vanished"]
 
+    if include_overlaps:
+        # Don't condition on where the person ends up
+        df_sub["cat_anyStat_addr1"] = mask_S_start & sv_trans_date.notna() & (df_sub["sv_addr_changed"] == 1)
+        df_sub["cat_anyStat_addr0"] = mask_S_start & sv_trans_date.notna() & (df_sub["sv_addr_changed"] == 0)
+    
     verbose_test = True
     if verbose_test:
         ptest = '1001'
@@ -193,9 +202,14 @@ def compute_trajectories(df: pd.DataFrame, start: str, end: str, unknown_label: 
     
     return df_sub, (df_sub["start_zip"] if "start_zip" in df_sub.columns else None)
 
-def summarize_by_group(df_sub: pd.DataFrame, group_col: str) -> pd.DataFrame:
+def summarize_by_group(df_sub: pd.DataFrame, group_col: str, include_overlaps) -> pd.DataFrame:
     # Restrict to the S-at-start population via union of outcome masks
     s_start_mask = (df_sub["cat_V_addr1"] | df_sub["cat_V_addr0"] | df_sub["cat_still_S"] | df_sub["cat_vanished"])
+
+    # If we also incldue overlaps
+    if include_overlaps:
+        s_start_mask = (s_start_mask | df_sub["cat_anyStat_addr1"] | df_sub["cat_anyStat_addr0"] )
+        
     sstart = df_sub[s_start_mask]
 
     out = sstart.groupby(group_col, dropna=False).size().rename("n_S_start").reset_index()
@@ -204,24 +218,35 @@ def summarize_by_group(df_sub: pd.DataFrame, group_col: str) -> pd.DataFrame:
     cat3 = sstart.groupby(group_col, dropna=False)["cat_still_S"].sum().rename("n_S_to_S").reset_index()
     cat4 = sstart.groupby(group_col, dropna=False)["cat_vanished"].sum().rename("n_vanished").reset_index()
 
+    if include_overlaps:
+        cat1A = sstart.groupby(group_col, dropna=False)["cat_anyStat_addr1"].sum().rename("n_S_to_V_addr1_AnyStat").reset_index()
+        cat2A = sstart.groupby(group_col, dropna=False)["cat_anyStat_addr0"].sum().rename("n_S_to_V_addr0_AnyStat").reset_index()
+    
     res = out.merge(cat1, on=group_col, how="left") \
              .merge(cat2, on=group_col, how="left") \
              .merge(cat3, on=group_col, how="left") \
              .merge(cat4, on=group_col, how="left")
 
+    if include_overlaps:
+        res = res.merge(cat1A, on=group_col, how="left").merge(cat2A,  on=group_col, how="left")
+        
     for c in ["n_S_start", "n_S_to_V_addr1", "n_S_to_V_addr0", "n_S_to_S", "n_vanished"]:
         res[c] = res[c].fillna(0).astype(int)
 
+    if include_overlaps:
+        for c in ["n_S_to_V_addr1_AnyStat", "n_S_to_V_addr0_AnyStat"]:
+            res[c] = res[c].fillna(0).astype(int)
+        
     res = res.sort_values(by=[group_col], key=lambda s: s.astype(str).str.pad(5, fillchar="0"), ignore_index=True)
     res.rename(columns={group_col: "group_value"}, inplace=True)
 
         
     return res
 
-def run_span(df: pd.DataFrame, start: str, end: str, do_zip: bool, unknown_label: str,
-             precinct_out: Optional[str]=None, zip_out: Optional[str]=None):
+def run_span(df: pd.DataFrame, start: str, end: str, do_zip: bool, include_overlaps: bool, unknown_label: str,
+             precinct_out: Optional[str]=None, zip_out: Optional[str]=None, ):
     status(f"-> Span {start} → {end}: computing trajectories (population = S at start) ...")
-    df_sub, start_zip_ser = compute_trajectories(df, start, end, unknown_label)
+    df_sub, start_zip_ser = compute_trajectories(df, start, end, include_overlaps, unknown_label)
 
     # Output names (auto if not provided)
     if precinct_out is None:
@@ -231,7 +256,7 @@ def run_span(df: pd.DataFrame, start: str, end: str, do_zip: bool, unknown_label
 
     # Precinct summary
     status("   Summarizing by starting precinct...")
-    precinct_summary = summarize_by_group(df_sub, "start_precinct")
+    precinct_summary = summarize_by_group(df_sub, "start_precinct", include_overlaps)
     precinct_summary.to_csv(precinct_out, index=False)
     status(f"   Wrote precinct summary: {precinct_out}")
 
@@ -243,7 +268,7 @@ def run_span(df: pd.DataFrame, start: str, end: str, do_zip: bool, unknown_label
             if "start_zip" not in df_sub.columns:
                 df_sub["start_zip"] = start_zip_ser
             status("   Summarizing by starting ZIP...")
-            zip_summary = summarize_by_group(df_sub, "start_zip")
+            zip_summary = summarize_by_group(df_sub, "start_zip", include_overlaps)
             zip_summary.to_csv(zip_out, index=False)
             status(f"   Wrote ZIP summary: {zip_out}")
 
@@ -302,6 +327,7 @@ def main():
             start=s,
             end=e,
             do_zip=args.zip,
+            include_overlaps=args.include_overlaps,
             unknown_label=args.unknown_label,
             precinct_out=(args.precinct_out if len(spans)==1 else None),
             zip_out=(args.zip_out if len(spans)==1 else None),
